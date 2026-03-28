@@ -16,6 +16,9 @@ pub enum Error {
     #[error("config error: {0}")]
     Config(String),
 
+    #[error("payment error: {0}")]
+    Payment(String),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
