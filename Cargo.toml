@@ -59,6 +59,8 @@ pin-project-lite = "0.2"
 rand = "0.9"
 # Base64 encoding (HTTP proxy auth, etc.)
 base64 = "0.22"
+# HTTP client (used by import commands)
+reqwest = { version = "0.12", features = ["json"] }
 
 # Feature-gated dependencies
 fast-socks5 = { version = "0.9", optional = true }

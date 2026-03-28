@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use houdinny::config::{Config, Strategy, TunnelConfig};
@@ -18,6 +18,9 @@ use houdinny::transport::Transport;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     /// Path to the TOML config file.
     #[arg(short, long, default_value = "tunnels.toml")]
     config: PathBuf,
@@ -40,6 +43,52 @@ struct Cli {
     /// Enable debug logging (RUST_LOG=debug).
     #[arg(short, long)]
     verbose: bool,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Import tunnel configurations from providers
+    Import {
+        #[command(subcommand)]
+        provider: ImportProvider,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ImportProvider {
+    /// Import WireGuard tunnels from NordVPN
+    Nord {
+        /// NordVPN access token (from https://my.nordaccount.com/)
+        #[arg(long)]
+        token: String,
+        /// Number of server configs to fetch
+        #[arg(long, default_value = "3")]
+        count: usize,
+        /// Comma-separated country codes (e.g., us,de,jp)
+        #[arg(long, value_delimiter = ',')]
+        countries: Option<Vec<String>>,
+        /// Output config file to write/append to
+        #[arg(long, default_value = "tunnels.toml")]
+        output: PathBuf,
+    },
+    /// Set up SSH SOCKS5 tunnels
+    Ssh {
+        /// SSH host (hostname or IP, e.g., tailscale hostname)
+        #[arg(long)]
+        host: String,
+        /// SSH user
+        #[arg(long, default_value = "root")]
+        user: String,
+        /// Local SOCKS5 ports to use (one SSH tunnel per port)
+        #[arg(long, value_delimiter = ',', default_value = "1080")]
+        ports: Vec<u16>,
+        /// Output config file to write/append to
+        #[arg(long, default_value = "tunnels.toml")]
+        output: PathBuf,
+        /// Actually start the SSH tunnels (ssh -D -N -f)
+        #[arg(long)]
+        start: bool,
+    },
 }
 
 /// Build transports from tunnel configurations.
@@ -250,6 +299,41 @@ async fn main() -> Result<()> {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
     };
     tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    // ── dispatch subcommands ─────────────────────────────────────────────
+    match cli.command {
+        Some(Commands::Import { provider }) => {
+            match provider {
+                ImportProvider::Nord {
+                    token,
+                    count,
+                    countries,
+                    output,
+                } => {
+                    houdinny::import::nord::import_nord(
+                        &token,
+                        count,
+                        countries.as_deref(),
+                        &output,
+                    )
+                    .await?;
+                }
+                ImportProvider::Ssh {
+                    host,
+                    user,
+                    ports,
+                    output,
+                    start,
+                } => {
+                    houdinny::import::ssh::import_ssh(&host, &user, &ports, &output, start).await?;
+                }
+            }
+            return Ok(());
+        }
+        None => {
+            // Fall through to existing proxy run logic.
+        }
+    }
 
     // ── config ───────────────────────────────────────────────────────────
     let mut config = if let Some(ref urls) = cli.tunnels {
