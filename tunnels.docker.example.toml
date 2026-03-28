@@ -1,0 +1,35 @@
+# houdinny tunnel config for Docker Compose setup
+#
+# Copy this to tunnels.docker.toml and adjust as needed.
+# Each vpn-N service in docker-compose.yml needs a matching tunnel entry.
+#
+# IMPORTANT: After starting `docker compose up -d`, you need to run
+# the following once to set up SOCKS5 proxies and whitelist the network:
+#
+#   docker exec houdinny-vpn-1 nordvpn whitelist add subnet 172.20.0.0/16
+#   docker exec houdinny-vpn-2 nordvpn whitelist add subnet 172.20.0.0/16
+#   docker exec houdinny-vpn-3 nordvpn whitelist add subnet 172.20.0.0/16
+#   docker exec -d houdinny-vpn-1 microsocks -p 1080 -b 0.0.0.0
+#   docker exec -d houdinny-vpn-2 microsocks -p 1080 -b 0.0.0.0
+#   docker exec -d houdinny-vpn-3 microsocks -p 1080 -b 0.0.0.0
+#   docker restart houdinny
+
+[proxy]
+listen = "0.0.0.0:8080"
+mode = "transparent"
+strategy = "round-robin"
+
+[[tunnel]]
+protocol = "socks5"
+address = "172.20.0.10:1080"
+label = "vpn-1"
+
+[[tunnel]]
+protocol = "socks5"
+address = "172.20.0.11:1080"
+label = "vpn-2"
+
+[[tunnel]]
+protocol = "socks5"
+address = "172.20.0.12:1080"
+label = "vpn-3"

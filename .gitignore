@@ -19,9 +19,11 @@ Thumbs.db
 
 # Environment / secrets
 .env
-.env.*
+!.env.example
 *.key
 *.pem
 
 # Tunnel configs (may contain private keys)
 tunnels.toml
+tunnels.docker.toml
+setup-wg.sh

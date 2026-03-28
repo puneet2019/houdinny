@@ -1,11 +1,20 @@
+# houdinny — Privacy proxy for AI agents
+#
+# Usage:
+#   1. Copy .env.example to .env and fill in your credentials
+#   2. docker compose up -d
+#   3. export HTTP_PROXY=http://localhost:8080
+#   4. Your requests now rotate across VPN tunnels
+#
+# To add more countries, duplicate a vpn-* + proxy-* service pair.
+
 services:
-  # NordVPN US
-  vpn-us:
+  # VPN tunnel — change CONNECT to any country
+  # See: https://nordvpn.com/servers/tools/ for country names
+  vpn-1:
     image: ghcr.io/bubuntux/nordvpn
-    container_name: houdinny-vpn-us
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
+    container_name: houdinny-vpn-1
+    cap_add: [NET_ADMIN, NET_RAW]
     sysctls:
       - net.ipv6.conf.all.disable_ipv6=1
     environment:
@@ -17,13 +26,10 @@ services:
       houdinny-net:
         ipv4_address: 172.20.0.10
 
-  # NordVPN Germany
-  vpn-de:
+  vpn-2:
     image: ghcr.io/bubuntux/nordvpn
-    container_name: houdinny-vpn-de
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
+    container_name: houdinny-vpn-2
+    cap_add: [NET_ADMIN, NET_RAW]
     sysctls:
       - net.ipv6.conf.all.disable_ipv6=1
     environment:
@@ -35,41 +41,22 @@ services:
       houdinny-net:
         ipv4_address: 172.20.0.11
 
-  # NordVPN South Korea
-  vpn-kr:
+  vpn-3:
     image: ghcr.io/bubuntux/nordvpn
-    container_name: houdinny-vpn-kr
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
+    container_name: houdinny-vpn-3
+    cap_add: [NET_ADMIN, NET_RAW]
     sysctls:
       - net.ipv6.conf.all.disable_ipv6=1
     environment:
       - TOKEN=${NORD_TOKEN}
-      - CONNECT=South_Korea
+      - CONNECT=Japan
       - TECHNOLOGY=NordLynx
       - NETWORK=172.20.0.0/16
     networks:
       houdinny-net:
         ipv4_address: 172.20.0.12
 
-  # Proxy sidecars — expose SOCKS5 from each VPN container
-  proxy-us:
-    image: serjs/go-socks5-proxy
-    container_name: houdinny-proxy-us
-    network_mode: "service:vpn-us"
-
-  proxy-de:
-    image: serjs/go-socks5-proxy
-    container_name: houdinny-proxy-de
-    network_mode: "service:vpn-de"
-
-  proxy-kr:
-    image: serjs/go-socks5-proxy
-    container_name: houdinny-proxy-kr
-    network_mode: "service:vpn-kr"
-
-  # houdinny
+  # houdinny proxy
   houdinny:
     build: .
     container_name: houdinny
@@ -77,13 +64,8 @@ services:
       - "8080:8080"
     volumes:
       - ./tunnels.docker.toml:/etc/houdinny/tunnels.toml:ro
-    command: ["-c", "/etc/houdinny/tunnels.toml", "-v"]
-    depends_on:
-      - proxy-us
-      - proxy-de
-      - proxy-kr
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    command: ["-c", "/etc/houdinny/tunnels.toml"]
+    depends_on: [vpn-1, vpn-2, vpn-3]
     networks:
       houdinny-net:
         ipv4_address: 172.20.0.20
