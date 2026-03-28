@@ -1,0 +1,59 @@
+# houdinny tunnel configuration
+#
+# Copy this file to tunnels.toml and edit with your tunnel details.
+# tunnels.toml is gitignored (may contain private keys).
+
+[proxy]
+listen = "127.0.0.1:8080"
+mode = "transparent"          # "transparent" (default) or "mitm"
+strategy = "random"           # "random", "round-robin", "least-connections"
+
+# --- Tor (zero-config, works out of the box) ---
+
+[[tunnel]]
+protocol = "tor"
+circuits = 5                  # number of separate Tor circuits (exit IPs)
+rotate_interval = "10m"       # build fresh circuits every N minutes
+label = "tor-default"
+
+# --- SOCKS5 (SSH tunnels, proxy services) ---
+# Set up with: ssh -D 1080 -N user@myserver
+
+# [[tunnel]]
+# protocol = "socks5"
+# address = "127.0.0.1:1080"
+# label = "ssh-tokyo"
+
+# [[tunnel]]
+# protocol = "socks5"
+# address = "127.0.0.1:1081"
+# label = "ssh-london"
+
+# --- WireGuard (NordVPN, Mullvad, Proton, self-hosted) ---
+# Get configs with: houdinny import nord --token=YOUR_TOKEN --count=3
+
+# [[tunnel]]
+# protocol = "wireguard"
+# endpoint = "169.150.196.30:51820"
+# private_key = "your-private-key"
+# public_key = "server-public-key"
+# address = "10.5.0.2/32"
+# dns = "103.86.96.100"
+# label = "nord-us-east"
+
+# --- HTTP CONNECT proxy (residential, datacenter) ---
+
+# [[tunnel]]
+# protocol = "http-proxy"
+# address = "http://user:pass@gate.brightdata.com:22225"
+# label = "residential-us"
+
+# --- Sentinel dVPN (decentralized, pay-per-session) ---
+
+# [[tunnel]]
+# protocol = "sentinel"
+# node = "sentnode1qx..."
+# denom = "udvpn"
+# deposit = "1000000udvpn"
+# wallet_key = "~/.houdinny/sentinel_key"
+# label = "sentinel-singapore"

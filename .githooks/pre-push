@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -e
+
+echo "==> Running pre-push checks..."
+
+echo "  Checking formatting..."
+cargo fmt --check
+
+echo "  Running clippy..."
+cargo clippy -- -D warnings
+
+echo "  Running all tests..."
+cargo test
+
+echo "  Verifying feature matrix..."
+cargo check --no-default-features --quiet
+cargo check --all-features --quiet
+
+echo "  Building release..."
+cargo build --release --quiet
+
+echo "==> All pre-push checks passed."

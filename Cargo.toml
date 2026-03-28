@@ -1,0 +1,75 @@
+[package]
+name = "houdinny"
+version = "0.1.0"
+edition = "2024"
+description = "Privacy proxy for AI agents — rotates requests across tunnel pools with automatic payment handling"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/AquaQualis/houdinny"
+readme = "README.md"
+keywords = ["proxy", "privacy", "vpn", "agent", "tunnel"]
+categories = ["network-programming", "command-line-utilities"]
+
+[lib]
+name = "houdinny"
+path = "src/lib.rs"
+
+[[bin]]
+name = "houdinny"
+path = "src/main.rs"
+
+[features]
+default = ["socks5"]
+socks5 = ["dep:fast-socks5"]
+tor = ["dep:arti-client", "dep:tor-rtcompat"]
+wireguard = ["dep:boringtun"]
+http-proxy = []
+mitm = ["dep:rustls", "dep:rcgen"]
+admin = []
+mcp = ["admin"]
+
+[dependencies]
+# Core async runtime
+tokio = { version = "1", features = ["full"] }
+# HTTP proxy server + client
+hyper = { version = "1", features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "client-legacy"] }
+http = "1"
+http-body-util = "0.1"
+# Buffers
+bytes = "1"
+# Middleware
+tower = { version = "0.5", features = ["util"] }
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# CLI
+clap = { version = "4", features = ["derive"] }
+# Config
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+# Error handling
+thiserror = "2"
+anyhow = "1"
+# Async trait
+async-trait = "0.1"
+# Utilities
+pin-project-lite = "0.2"
+
+# Feature-gated dependencies
+fast-socks5 = { version = "0.9", optional = true }
+arti-client = { version = "0.27", optional = true }
+tor-rtcompat = { version = "0.27", features = ["tokio"], optional = true }
+boringtun = { version = "0.7", optional = true }
+rustls = { version = "0.23", optional = true }
+rcgen = { version = "0.13", optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+reqwest = { version = "0.12", features = ["socks"] }
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"

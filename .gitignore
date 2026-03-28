@@ -1,0 +1,27 @@
+# Build
+/target/
+debug/
+*.pdb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Tunnel configs (may contain private keys)
+tunnels.toml
