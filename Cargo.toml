@@ -57,6 +57,8 @@ async-trait = "0.1"
 pin-project-lite = "0.2"
 # Randomness (used by router)
 rand = "0.9"
+# Base64 encoding (HTTP proxy auth, etc.)
+base64 = "0.22"
 
 # Feature-gated dependencies
 fast-socks5 = { version = "0.9", optional = true }

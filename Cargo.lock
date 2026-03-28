@@ -1717,6 +1717,7 @@ dependencies = [
  "anyhow",
  "arti-client",
  "async-trait",
+ "base64 0.22.1",
  "boringtun",
  "bytes",
  "clap",

@@ -43,6 +43,8 @@ pub trait Transport: Send + Sync {
     async fn close(&self) -> Result<()>;
 }
 
+pub mod http_proxy;
+
 #[cfg(feature = "socks5")]
 pub mod socks5;
 

@@ -47,6 +47,7 @@ struct Cli {
 /// Only protocols with the corresponding feature enabled are built.
 /// Unknown or feature-gated protocols are logged as warnings and skipped.
 fn build_transports(tunnels: &[TunnelConfig]) -> Vec<Arc<dyn Transport>> {
+    #[allow(unused_mut)]
     let mut transports: Vec<Arc<dyn Transport>> = Vec::new();
 
     for tunnel in tunnels {
@@ -105,6 +106,44 @@ fn build_transports(tunnels: &[TunnelConfig]) -> Vec<Arc<dyn Transport>> {
                     label = tunnel.label.as_deref().unwrap_or("(unlabelled)"),
                     "wireguard tunnel configured but 'wireguard' feature is not enabled — skipping"
                 );
+            }
+            "http-proxy" => {
+                let address = match &tunnel.address {
+                    Some(addr) => addr.clone(),
+                    None => {
+                        tracing::warn!(
+                            label = tunnel.label.as_deref().unwrap_or("(unlabelled)"),
+                            "http-proxy tunnel missing address — skipping"
+                        );
+                        continue;
+                    }
+                };
+                let label = tunnel
+                    .label
+                    .as_deref()
+                    .unwrap_or("(unlabelled)")
+                    .to_string();
+                // The address field may be a full URL (http://user:pass@host:port)
+                // or a bare host:port. Try from_url first, fall back to direct.
+                let transport = if address.starts_with("http://") || address.starts_with("https://")
+                {
+                    match houdinny::transport::http_proxy::HttpProxyTransport::from_url(
+                        &address, &label,
+                    ) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            tracing::warn!(
+                                label = label.as_str(),
+                                error = %e,
+                                "http-proxy tunnel URL parse failed — skipping"
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    houdinny::transport::http_proxy::HttpProxyTransport::new(address, None, label)
+                };
+                transports.push(Arc::new(transport));
             }
             other => {
                 tracing::warn!(
