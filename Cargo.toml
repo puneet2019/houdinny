@@ -54,6 +54,8 @@ anyhow = "1"
 async-trait = "0.1"
 # Utilities
 pin-project-lite = "0.2"
+# Randomness (used by router)
+rand = "0.9"
 
 # Feature-gated dependencies
 fast-socks5 = { version = "0.9", optional = true }
