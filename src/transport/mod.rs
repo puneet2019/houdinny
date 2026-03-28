@@ -48,5 +48,10 @@ pub mod http_proxy;
 #[cfg(feature = "socks5")]
 pub mod socks5;
 
+pub mod sentinel;
+
+#[cfg(feature = "tor")]
+pub mod tor;
+
 #[cfg(feature = "wireguard")]
 pub mod wireguard;

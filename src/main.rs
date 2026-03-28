@@ -46,7 +46,7 @@ struct Cli {
 ///
 /// Only protocols with the corresponding feature enabled are built.
 /// Unknown or feature-gated protocols are logged as warnings and skipped.
-fn build_transports(tunnels: &[TunnelConfig]) -> Vec<Arc<dyn Transport>> {
+async fn build_transports(tunnels: &[TunnelConfig]) -> Vec<Arc<dyn Transport>> {
     #[allow(unused_mut)]
     let mut transports: Vec<Arc<dyn Transport>> = Vec::new();
 
@@ -145,6 +145,87 @@ fn build_transports(tunnels: &[TunnelConfig]) -> Vec<Arc<dyn Transport>> {
                 };
                 transports.push(Arc::new(transport));
             }
+            "sentinel" => {
+                let node = match &tunnel.node {
+                    Some(n) => n.clone(),
+                    None => {
+                        tracing::warn!(
+                            label = tunnel.label.as_deref().unwrap_or("(unlabelled)"),
+                            "sentinel tunnel missing 'node' field — skipping"
+                        );
+                        continue;
+                    }
+                };
+                let denom = tunnel.denom.as_deref().unwrap_or("udvpn").to_string();
+                let deposit = match &tunnel.deposit {
+                    Some(d) => d.clone(),
+                    None => {
+                        tracing::warn!(
+                            label = tunnel.label.as_deref().unwrap_or("(unlabelled)"),
+                            "sentinel tunnel missing 'deposit' field — skipping"
+                        );
+                        continue;
+                    }
+                };
+                let wallet_key = match &tunnel.wallet_key {
+                    Some(k) => k.clone(),
+                    None => {
+                        tracing::warn!(
+                            label = tunnel.label.as_deref().unwrap_or("(unlabelled)"),
+                            "sentinel tunnel missing 'wallet_key' field — skipping"
+                        );
+                        continue;
+                    }
+                };
+                let label = tunnel
+                    .label
+                    .as_deref()
+                    .unwrap_or("(unlabelled)")
+                    .to_string();
+                tracing::warn!(
+                    label = label.as_str(),
+                    "sentinel dVPN transport is a stub — provisioning will fail until Cosmos SDK integration is complete"
+                );
+                let transport = houdinny::transport::sentinel::SentinelTransport::new(
+                    node, denom, deposit, wallet_key, label,
+                );
+                transports.push(Arc::new(transport));
+            }
+            #[cfg(feature = "tor")]
+            "tor" => {
+                let circuits = tunnel.circuits.unwrap_or(3) as usize;
+                let label = tunnel
+                    .label
+                    .as_deref()
+                    .unwrap_or("(unlabelled)")
+                    .to_string();
+                match houdinny::transport::tor::create_tor_pool(circuits, &label).await {
+                    Ok(tor_transports) => {
+                        tracing::info!(
+                            label = label.as_str(),
+                            circuits = tor_transports.len(),
+                            "tor circuits created"
+                        );
+                        for t in tor_transports {
+                            transports.push(Arc::new(t));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            label = label.as_str(),
+                            error = %e,
+                            "failed to create tor transport pool — skipping"
+                        );
+                    }
+                }
+            }
+            #[cfg(not(feature = "tor"))]
+            "tor" => {
+                tracing::warn!(
+                    label = tunnel.label.as_deref().unwrap_or("(unlabelled)"),
+                    "tor tunnel configured but 'tor' feature is not enabled — skipping"
+                );
+            }
             other => {
                 tracing::warn!(
                     protocol = other,
@@ -209,7 +290,7 @@ async fn main() -> Result<()> {
     }
 
     // ── build transports ─────────────────────────────────────────────────
-    let transports = build_transports(&config.tunnel);
+    let transports = build_transports(&config.tunnel).await;
 
     if transports.is_empty() {
         if config.tunnel.is_empty() {
