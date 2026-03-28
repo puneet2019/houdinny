@@ -102,6 +102,9 @@ pub struct TunnelConfig {
     /// DNS server to use inside the tunnel.
     pub dns: Option<String>,
 
+    /// Network interface name (WireGuard, e.g. `"wg0"`, `"utun3"`, `"nordlynx"`).
+    pub interface: Option<String>,
+
     /// Number of Tor circuits to maintain.
     pub circuits: Option<u32>,
 
@@ -205,6 +208,7 @@ impl Config {
                     private_key: None,
                     public_key: None,
                     dns: None,
+                    interface: None,
                     circuits: None,
                     rotate_interval: None,
                     node: None,

@@ -21,7 +21,7 @@ path = "src/main.rs"
 default = ["socks5"]
 socks5 = ["dep:fast-socks5"]
 tor = ["dep:arti-client", "dep:tor-rtcompat"]
-wireguard = ["dep:boringtun"]
+wireguard = ["dep:boringtun", "dep:socket2", "dep:nix"]
 http-proxy = []
 mitm = ["dep:rustls", "dep:rcgen"]
 admin = []
@@ -63,6 +63,8 @@ fast-socks5 = { version = "0.9", optional = true }
 arti-client = { version = "0.27", optional = true }
 tor-rtcompat = { version = "0.27", features = ["tokio"], optional = true }
 boringtun = { version = "0.7", optional = true }
+socket2 = { version = "0.5", features = ["all"], optional = true }
+nix = { version = "0.29", features = ["net"], optional = true }
 rustls = { version = "0.23", optional = true }
 rcgen = { version = "0.13", optional = true }
 

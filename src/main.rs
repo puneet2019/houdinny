@@ -78,6 +78,34 @@ fn build_transports(tunnels: &[TunnelConfig]) -> Vec<Arc<dyn Transport>> {
                     "socks5 tunnel configured but 'socks5' feature is not enabled — skipping"
                 );
             }
+            #[cfg(feature = "wireguard")]
+            "wireguard" => {
+                let interface = match &tunnel.interface {
+                    Some(iface) => iface.clone(),
+                    None => {
+                        tracing::warn!(
+                            label = tunnel.label.as_deref().unwrap_or("(unlabelled)"),
+                            "wireguard tunnel missing 'interface' field — skipping"
+                        );
+                        continue;
+                    }
+                };
+                let label = tunnel
+                    .label
+                    .as_deref()
+                    .unwrap_or("(unlabelled)")
+                    .to_string();
+                let transport =
+                    houdinny::transport::wireguard::WireGuardTransport::new(interface, label);
+                transports.push(Arc::new(transport));
+            }
+            #[cfg(not(feature = "wireguard"))]
+            "wireguard" => {
+                tracing::warn!(
+                    label = tunnel.label.as_deref().unwrap_or("(unlabelled)"),
+                    "wireguard tunnel configured but 'wireguard' feature is not enabled — skipping"
+                );
+            }
             other => {
                 tracing::warn!(
                     protocol = other,
