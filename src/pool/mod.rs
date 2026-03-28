@@ -74,8 +74,28 @@ impl Pool {
     /// Logs a warning for each unhealthy transport encountered.
     pub async fn healthy_transports(&self) -> Vec<Arc<dyn Transport>> {
         let guard = self.transports.read().await;
+        Self::filter_healthy(&guard)
+    }
+
+    /// Synchronous version of [`Pool::healthy_transports`] for use inside
+    /// non-async closures (e.g. the proxy picker).
+    ///
+    /// Uses [`RwLock::try_read`] to avoid blocking the runtime. Returns an
+    /// empty list if the lock is currently held by a writer.
+    pub fn healthy_transports_sync(&self) -> Vec<Arc<dyn Transport>> {
+        match self.transports.try_read() {
+            Ok(guard) => Self::filter_healthy(&guard),
+            Err(_) => {
+                warn!("pool lock contended — returning empty transport list");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Shared filter logic for healthy transport extraction.
+    fn filter_healthy(transports: &[Arc<dyn Transport>]) -> Vec<Arc<dyn Transport>> {
         let mut healthy = Vec::new();
-        for t in guard.iter() {
+        for t in transports.iter() {
             if t.healthy() {
                 healthy.push(Arc::clone(t));
             } else {

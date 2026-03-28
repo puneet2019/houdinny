@@ -7,5 +7,6 @@ pub mod config;
 pub mod error;
 pub mod pool;
 pub mod proxy;
+pub mod relay;
 pub mod router;
 pub mod transport;

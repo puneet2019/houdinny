@@ -1,10 +1,15 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use houdinny::config::{Config, Strategy};
+use houdinny::config::{Config, Strategy, TunnelConfig};
+use houdinny::pool::Pool;
+use houdinny::proxy::ProxyServer;
+use houdinny::router::Router;
+use houdinny::transport::Transport;
 
 /// houdinny — privacy proxy for AI agents.
 ///
@@ -37,7 +42,57 @@ struct Cli {
     verbose: bool,
 }
 
-fn main() -> Result<()> {
+/// Build transports from tunnel configurations.
+///
+/// Only protocols with the corresponding feature enabled are built.
+/// Unknown or feature-gated protocols are logged as warnings and skipped.
+fn build_transports(tunnels: &[TunnelConfig]) -> Vec<Arc<dyn Transport>> {
+    let mut transports: Vec<Arc<dyn Transport>> = Vec::new();
+
+    for tunnel in tunnels {
+        match tunnel.protocol.as_str() {
+            #[cfg(feature = "socks5")]
+            "socks5" => {
+                let address = match &tunnel.address {
+                    Some(addr) => addr.clone(),
+                    None => {
+                        tracing::warn!(
+                            label = tunnel.label.as_deref().unwrap_or("(unlabelled)"),
+                            "socks5 tunnel missing address — skipping"
+                        );
+                        continue;
+                    }
+                };
+                let label = tunnel
+                    .label
+                    .as_deref()
+                    .unwrap_or("(unlabelled)")
+                    .to_string();
+                let transport = houdinny::transport::socks5::Socks5Transport::new(address, label);
+                transports.push(Arc::new(transport));
+            }
+            #[cfg(not(feature = "socks5"))]
+            "socks5" => {
+                tracing::warn!(
+                    label = tunnel.label.as_deref().unwrap_or("(unlabelled)"),
+                    "socks5 tunnel configured but 'socks5' feature is not enabled — skipping"
+                );
+            }
+            other => {
+                tracing::warn!(
+                    protocol = other,
+                    label = tunnel.label.as_deref().unwrap_or("(unlabelled)"),
+                    "unsupported tunnel protocol — skipping (not yet implemented)"
+                );
+            }
+        }
+    }
+
+    transports
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // ── logging ──────────────────────────────────────────────────────────
@@ -74,10 +129,6 @@ fn main() -> Result<()> {
     println!("  strategy: {}", config.proxy.strategy);
     println!("  mode:     {}", config.proxy.mode);
 
-    if config.tunnel.is_empty() {
-        tracing::warn!("no tunnels configured — proxy will have nothing to route through");
-    }
-
     for (i, t) in config.tunnel.iter().enumerate() {
         let label = t.label.as_deref().unwrap_or("(unlabelled)");
         let addr = t.address.as_deref().unwrap_or("-");
@@ -90,8 +141,63 @@ fn main() -> Result<()> {
         );
     }
 
-    // Proxy server wiring will be added in a later phase.
-    tracing::info!("config loaded successfully — proxy server not yet wired");
+    // ── build transports ─────────────────────────────────────────────────
+    let transports = build_transports(&config.tunnel);
+
+    if transports.is_empty() {
+        if config.tunnel.is_empty() {
+            tracing::warn!("no tunnels configured — nothing to route through");
+        } else {
+            tracing::warn!(
+                "no usable transports built from {} tunnel config(s) — \
+                 check protocol support and feature flags",
+                config.tunnel.len()
+            );
+        }
+        anyhow::bail!(
+            "cannot start proxy with no usable transports. \
+             Add tunnels via -t/--tunnels or a config file."
+        );
+    }
+
+    tracing::info!(count = transports.len(), "transports ready");
+
+    // ── pool ─────────────────────────────────────────────────────────────
+    let pool = Arc::new(Pool::new(transports));
+
+    // ── router ───────────────────────────────────────────────────────────
+    let router: Arc<Box<dyn Router>> = Arc::new(config.proxy.strategy.build_router());
+
+    // ── picker closure ───────────────────────────────────────────────────
+    let picker = {
+        let pool = Arc::clone(&pool);
+        let router = Arc::clone(&router);
+        move |host: &str, port: u16| -> houdinny::error::Result<Arc<dyn Transport>> {
+            let healthy = pool.healthy_transports_sync();
+            router.pick(host, port, &healthy)
+        }
+    };
+
+    // ── start proxy server ───────────────────────────────────────────────
+    let addr: std::net::SocketAddr = config
+        .proxy
+        .listen
+        .parse()
+        .with_context(|| format!("invalid listen address: {}", config.proxy.listen))?;
+
+    let server = ProxyServer::new(addr);
+    println!("houdinny proxy listening on {}", addr);
+
+    // Run the server with graceful Ctrl+C shutdown.
+    tokio::select! {
+        result = server.run(picker) => {
+            result.with_context(|| "proxy server error")?;
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!();
+            tracing::info!("received Ctrl+C — shutting down");
+        }
+    }
 
     Ok(())
 }
