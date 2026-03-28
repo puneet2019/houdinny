@@ -169,7 +169,7 @@ async fn fetch_credentials(client: &reqwest::Client, token: &str) -> Result<Cred
 
     let resp = client
         .get(url)
-        .header("Authorization", format!("token:{token}"))
+        .basic_auth("token", Some(token))
         .send()
         .await
         .context("failed to reach NordVPN credentials API")?;

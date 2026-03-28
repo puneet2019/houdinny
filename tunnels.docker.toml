@@ -1,0 +1,28 @@
+[proxy]
+listen = "0.0.0.0:8080"
+mode = "transparent"
+strategy = "round-robin"
+
+# SSH tunnel through magicpi5 (running on host)
+[[tunnel]]
+protocol = "socks5"
+address = "host.docker.internal:1080"
+label = "ssh-magicpi5"
+
+# NordVPN US (SOCKS5 sidecar on vpn-us container)
+[[tunnel]]
+protocol = "socks5"
+address = "172.20.0.10:1080"
+label = "nord-us"
+
+# NordVPN Germany
+[[tunnel]]
+protocol = "socks5"
+address = "172.20.0.11:1080"
+label = "nord-de"
+
+# NordVPN South Korea
+[[tunnel]]
+protocol = "socks5"
+address = "172.20.0.12:1080"
+label = "nord-kr"

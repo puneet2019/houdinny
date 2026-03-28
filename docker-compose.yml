@@ -1,0 +1,96 @@
+services:
+  # NordVPN US
+  vpn-us:
+    image: ghcr.io/bubuntux/nordvpn
+    container_name: houdinny-vpn-us
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+    environment:
+      - TOKEN=${NORD_TOKEN}
+      - CONNECT=United_States
+      - TECHNOLOGY=NordLynx
+      - NETWORK=172.20.0.0/16
+    networks:
+      houdinny-net:
+        ipv4_address: 172.20.0.10
+
+  # NordVPN Germany
+  vpn-de:
+    image: ghcr.io/bubuntux/nordvpn
+    container_name: houdinny-vpn-de
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+    environment:
+      - TOKEN=${NORD_TOKEN}
+      - CONNECT=Germany
+      - TECHNOLOGY=NordLynx
+      - NETWORK=172.20.0.0/16
+    networks:
+      houdinny-net:
+        ipv4_address: 172.20.0.11
+
+  # NordVPN South Korea
+  vpn-kr:
+    image: ghcr.io/bubuntux/nordvpn
+    container_name: houdinny-vpn-kr
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+    environment:
+      - TOKEN=${NORD_TOKEN}
+      - CONNECT=South_Korea
+      - TECHNOLOGY=NordLynx
+      - NETWORK=172.20.0.0/16
+    networks:
+      houdinny-net:
+        ipv4_address: 172.20.0.12
+
+  # Proxy sidecars — expose SOCKS5 from each VPN container
+  proxy-us:
+    image: serjs/go-socks5-proxy
+    container_name: houdinny-proxy-us
+    network_mode: "service:vpn-us"
+
+  proxy-de:
+    image: serjs/go-socks5-proxy
+    container_name: houdinny-proxy-de
+    network_mode: "service:vpn-de"
+
+  proxy-kr:
+    image: serjs/go-socks5-proxy
+    container_name: houdinny-proxy-kr
+    network_mode: "service:vpn-kr"
+
+  # houdinny
+  houdinny:
+    build: .
+    container_name: houdinny
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./tunnels.docker.toml:/etc/houdinny/tunnels.toml:ro
+    command: ["-c", "/etc/houdinny/tunnels.toml", "-v"]
+    depends_on:
+      - proxy-us
+      - proxy-de
+      - proxy-kr
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      houdinny-net:
+        ipv4_address: 172.20.0.20
+
+networks:
+  houdinny-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

@@ -1,4 +1,8 @@
-FROM rust:1.85-slim AS builder
+FROM rust:latest AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
@@ -6,7 +10,7 @@ COPY src/ src/
 
 RUN cargo build --release --features socks5
 
-FROM debian:bookworm-slim
+FROM debian:sid-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
