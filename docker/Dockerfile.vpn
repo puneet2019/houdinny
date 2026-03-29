@@ -1,0 +1,8 @@
+FROM ghcr.io/bubuntux/nordvpn
+
+RUN apt-get update -qq && apt-get install -y -qq microsocks && rm -rf /var/lib/apt/lists/*
+
+# S6 long-lived service — runs after all init scripts complete
+RUN mkdir -p /etc/services.d/houdinny-socks
+COPY vpn-entrypoint.sh /etc/services.d/houdinny-socks/run
+RUN chmod +x /etc/services.d/houdinny-socks/run
