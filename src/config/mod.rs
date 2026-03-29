@@ -1,8 +1,14 @@
 //! Configuration loading and validation for houdinny.
 //!
-//! Supports loading from TOML files (`tunnels.toml`) or from CLI tunnel URLs
-//! (`socks5://127.0.0.1:1080`). All structs derive [`serde::Deserialize`] so
-//! the TOML crate handles the heavy lifting.
+//! Supports loading from TOML files (`houdinny.toml` / `tunnels.toml`) or from
+//! CLI tunnel URLs (`socks5://127.0.0.1:1080`). All structs derive
+//! [`serde::Deserialize`] so the TOML crate handles the heavy lifting.
+//!
+//! # Environment variable resolution
+//!
+//! Config values may reference environment variables via `${VAR_NAME}` syntax.
+//! The `.env` file (if present) is loaded before config parsing so secrets can
+//! live outside the config file.
 //!
 //! # Examples
 //!
@@ -26,17 +32,29 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 
-/// Top-level configuration, typically loaded from `tunnels.toml`.
+// ---------------------------------------------------------------------------
+// Top-level config
+// ---------------------------------------------------------------------------
+
+/// Top-level configuration, typically loaded from `houdinny.toml`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Proxy server settings (listen address, mode, strategy).
     #[serde(default)]
     pub proxy: ProxyConfig,
 
+    /// Docker-managed VPN configuration.
+    #[serde(default)]
+    pub docker: DockerConfig,
+
     /// List of tunnel definitions.
     #[serde(default)]
     pub tunnel: Vec<TunnelConfig>,
 }
+
+// ---------------------------------------------------------------------------
+// Proxy config
+// ---------------------------------------------------------------------------
 
 /// Proxy server configuration.
 #[derive(Debug, Clone, Deserialize)]
@@ -75,6 +93,39 @@ pub enum Strategy {
     /// Cycle through tunnels in order.
     RoundRobin,
 }
+
+// ---------------------------------------------------------------------------
+// Docker config
+// ---------------------------------------------------------------------------
+
+/// Docker-managed VPN configuration section.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DockerConfig {
+    /// Whether Docker VPN management is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// List of VPN containers to spin up.
+    #[serde(default)]
+    pub vpn: Vec<VpnConfig>,
+}
+
+/// A single Docker-managed VPN container configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct VpnConfig {
+    /// VPN provider (`"nordvpn"` for now).
+    pub provider: String,
+
+    /// Provider token/credential. May use `${ENV_VAR}` syntax.
+    pub token: Option<String>,
+
+    /// Country code or name (e.g. `"us"`, `"de"`, `"jp"`).
+    pub country: String,
+}
+
+// ---------------------------------------------------------------------------
+// Tunnel config
+// ---------------------------------------------------------------------------
 
 /// Configuration for a single tunnel.
 ///
@@ -166,6 +217,82 @@ impl fmt::Display for ProxyMode {
 }
 
 // ---------------------------------------------------------------------------
+// Environment variable resolution
+// ---------------------------------------------------------------------------
+
+/// Load environment variables from a `.env` file.
+///
+/// Lines are parsed as `KEY=VALUE` pairs. Empty lines and lines starting with
+/// `#` are skipped. This is intentionally simple — no quoting, no multi-line
+/// values — to avoid adding a dependency.
+pub fn load_dotenv(path: &Path) {
+    if let Ok(content) = std::fs::read_to_string(path) {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once('=') {
+                // SAFETY: we only call this at startup before spawning threads.
+                #[allow(deprecated)]
+                unsafe {
+                    std::env::set_var(key.trim(), value.trim());
+                }
+            }
+        }
+    }
+}
+
+/// Resolve `${VAR_NAME}` references in a string from environment variables.
+///
+/// If a referenced variable is not set, the `${VAR_NAME}` token is left as-is
+/// so the user sees what went wrong.
+pub fn resolve_env_vars(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '$' && chars.peek() == Some(&'{') {
+            // Consume '{'
+            chars.next();
+            // Collect the variable name until '}'
+            let mut var_name = String::new();
+            let mut found_close = false;
+            for c in chars.by_ref() {
+                if c == '}' {
+                    found_close = true;
+                    break;
+                }
+                var_name.push(c);
+            }
+            if found_close && !var_name.is_empty() {
+                match std::env::var(&var_name) {
+                    Ok(val) => result.push_str(&val),
+                    Err(_) => {
+                        // Leave the original token so the user can see
+                        // which variable is missing.
+                        result.push_str("${");
+                        result.push_str(&var_name);
+                        result.push('}');
+                    }
+                }
+            } else {
+                // Malformed — push what we consumed literally.
+                result.push_str("${");
+                result.push_str(&var_name);
+                if found_close {
+                    result.push('}');
+                }
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
+// ---------------------------------------------------------------------------
 // Constructors
 // ---------------------------------------------------------------------------
 
@@ -179,10 +306,14 @@ impl std::str::FromStr for Config {
 
 impl Config {
     /// Load configuration from a TOML file on disk.
+    ///
+    /// The raw TOML content has `${VAR}` references resolved before parsing so
+    /// that secrets can be kept in environment variables / `.env`.
     pub fn from_file(path: &Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path)
             .map_err(|e| Error::Config(format!("failed to read {}: {e}", path.display())))?;
-        contents.parse()
+        let resolved = resolve_env_vars(&contents);
+        resolved.parse()
     }
 
     /// Parse configuration from a TOML string.
@@ -221,6 +352,7 @@ impl Config {
 
         Self {
             proxy: ProxyConfig::default(),
+            docker: DockerConfig::default(),
             tunnel: tunnels,
         }
     }
@@ -270,12 +402,161 @@ mod tests {
     }
 
     #[test]
+    fn parse_houdinny_example_toml() {
+        // Set a fake token so env var resolution works.
+        #[allow(deprecated)]
+        unsafe {
+            std::env::set_var("NORD_TOKEN", "test-token-123");
+        }
+        let toml_str = include_str!("../../houdinny.toml.example");
+        let resolved = resolve_env_vars(toml_str);
+        let cfg = Config::parse_toml(&resolved).expect("houdinny.toml.example should parse");
+
+        assert_eq!(cfg.proxy.listen, "127.0.0.1:8080");
+        assert!(cfg.docker.enabled);
+        assert_eq!(cfg.docker.vpn.len(), 3);
+        assert_eq!(cfg.docker.vpn[0].provider, "nordvpn");
+        assert_eq!(cfg.docker.vpn[0].token.as_deref(), Some("test-token-123"));
+        assert_eq!(cfg.docker.vpn[0].country, "us");
+        assert_eq!(cfg.docker.vpn[1].country, "de");
+        assert_eq!(cfg.docker.vpn[2].country, "jp");
+    }
+
+    #[test]
     fn parse_empty_config_uses_defaults() {
         let cfg = Config::parse_toml("").expect("empty string should parse");
         assert_eq!(cfg.proxy.listen, "127.0.0.1:8080");
         assert_eq!(cfg.proxy.mode, ProxyMode::Transparent);
         assert_eq!(cfg.proxy.strategy, Strategy::Random);
         assert!(cfg.tunnel.is_empty());
+        assert!(!cfg.docker.enabled);
+        assert!(cfg.docker.vpn.is_empty());
+    }
+
+    #[test]
+    fn parse_config_without_docker_section() {
+        let toml_str = r#"
+[proxy]
+listen = "0.0.0.0:9090"
+
+[[tunnel]]
+protocol = "socks5"
+address = "127.0.0.1:1080"
+label = "my-socks"
+"#;
+        let cfg = Config::parse_toml(toml_str).expect("config without docker should parse");
+        assert_eq!(cfg.proxy.listen, "0.0.0.0:9090");
+        assert!(!cfg.docker.enabled);
+        assert!(cfg.docker.vpn.is_empty());
+        assert_eq!(cfg.tunnel.len(), 1);
+    }
+
+    #[test]
+    fn parse_config_with_docker_section() {
+        let toml_str = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+strategy = "round-robin"
+
+[docker]
+enabled = true
+
+[[docker.vpn]]
+provider = "nordvpn"
+token = "my-token"
+country = "us"
+
+[[docker.vpn]]
+provider = "nordvpn"
+token = "my-token"
+country = "de"
+"#;
+        let cfg = Config::parse_toml(toml_str).expect("config with docker should parse");
+        assert!(cfg.docker.enabled);
+        assert_eq!(cfg.docker.vpn.len(), 2);
+        assert_eq!(cfg.docker.vpn[0].provider, "nordvpn");
+        assert_eq!(cfg.docker.vpn[0].token.as_deref(), Some("my-token"));
+        assert_eq!(cfg.docker.vpn[0].country, "us");
+        assert_eq!(cfg.docker.vpn[1].country, "de");
+    }
+
+    #[test]
+    fn resolve_env_vars_existing() {
+        #[allow(deprecated)]
+        unsafe {
+            std::env::set_var("HOUDINNY_TEST_VAR", "hello_world");
+        }
+        let result = resolve_env_vars("token = \"${HOUDINNY_TEST_VAR}\"");
+        assert_eq!(result, "token = \"hello_world\"");
+    }
+
+    #[test]
+    fn resolve_env_vars_missing_left_as_is() {
+        let result = resolve_env_vars("token = \"${HOUDINNY_NONEXISTENT_VAR_12345}\"");
+        assert_eq!(result, "token = \"${HOUDINNY_NONEXISTENT_VAR_12345}\"");
+    }
+
+    #[test]
+    fn resolve_env_vars_multiple() {
+        #[allow(deprecated)]
+        unsafe {
+            std::env::set_var("HOUDINNY_A", "aaa");
+            std::env::set_var("HOUDINNY_B", "bbb");
+        }
+        let result = resolve_env_vars("${HOUDINNY_A} and ${HOUDINNY_B}");
+        assert_eq!(result, "aaa and bbb");
+    }
+
+    #[test]
+    fn resolve_env_vars_no_refs() {
+        let result = resolve_env_vars("just a plain string");
+        assert_eq!(result, "just a plain string");
+    }
+
+    #[test]
+    fn resolve_env_vars_empty_braces() {
+        // ${} — empty var name — left as-is
+        let result = resolve_env_vars("before ${}after");
+        assert_eq!(result, "before ${}after");
+    }
+
+    #[test]
+    fn dotenv_loading() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join(".env");
+        std::fs::write(
+            &env_path,
+            "# comment\nHOUDINNY_DOTENV_TEST=loaded_value\n\nANOTHER=42\n",
+        )
+        .unwrap();
+
+        load_dotenv(&env_path);
+
+        assert_eq!(
+            std::env::var("HOUDINNY_DOTENV_TEST").unwrap(),
+            "loaded_value"
+        );
+        assert_eq!(std::env::var("ANOTHER").unwrap(), "42");
+    }
+
+    #[test]
+    fn config_with_env_var_references_resolves() {
+        #[allow(deprecated)]
+        unsafe {
+            std::env::set_var("HOUDINNY_CFG_TOKEN", "secret-abc");
+        }
+        let toml_str = r#"
+[docker]
+enabled = true
+
+[[docker.vpn]]
+provider = "nordvpn"
+token = "${HOUDINNY_CFG_TOKEN}"
+country = "us"
+"#;
+        let resolved = resolve_env_vars(toml_str);
+        let cfg = Config::parse_toml(&resolved).expect("resolved config should parse");
+        assert_eq!(cfg.docker.vpn[0].token.as_deref(), Some("secret-abc"));
     }
 
     #[test]

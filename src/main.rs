@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use houdinny::config::{Config, Strategy, TunnelConfig};
+use houdinny::config::{Config, DockerConfig, Strategy, TunnelConfig, VpnConfig, load_dotenv};
 use houdinny::pool::Pool;
 use houdinny::proxy::ProxyServer;
 use houdinny::router::Router;
@@ -22,7 +22,7 @@ struct Cli {
     command: Option<Commands>,
 
     /// Path to the TOML config file.
-    #[arg(short, long, default_value = "tunnels.toml")]
+    #[arg(short, long, default_value = "houdinny.toml")]
     config: PathBuf,
 
     /// Listen address (overrides the value in the config file).
@@ -52,6 +52,36 @@ enum Commands {
         #[command(subcommand)]
         provider: ImportProvider,
     },
+
+    /// Start houdinny with Docker — reads config and runs docker compose
+    Start {
+        /// Config file path [default: houdinny.toml]
+        #[arg(short, long, default_value = "houdinny.toml")]
+        config: PathBuf,
+
+        /// Override: NordVPN token (skip config)
+        #[arg(long)]
+        nord_token: Option<String>,
+
+        /// Override: countries (skip config)
+        #[arg(long, value_delimiter = ',')]
+        countries: Option<Vec<String>>,
+
+        /// Override: listen port
+        #[arg(long)]
+        port: Option<u16>,
+
+        /// Routing strategy
+        #[arg(long, default_value = "round-robin")]
+        strategy: String,
+
+        /// Don't wait for VPN health checks
+        #[arg(long)]
+        no_wait: bool,
+    },
+
+    /// Stop houdinny Docker stack
+    Stop,
 }
 
 #[derive(Subcommand, Debug)]
@@ -288,6 +318,75 @@ async fn build_transports(tunnels: &[TunnelConfig]) -> Vec<Arc<dyn Transport>> {
     transports
 }
 
+/// Load configuration for the `start` command, applying CLI overrides.
+fn load_start_config(
+    config_path: &std::path::Path,
+    nord_token: &Option<String>,
+    countries: &Option<Vec<String>>,
+    port: &Option<u16>,
+) -> Result<(Config, DockerConfig, u16)> {
+    // Try to load config file. If it doesn't exist and the user supplied
+    // --nord-token + --countries flags, build a synthetic config instead.
+    let mut config = if config_path.exists() {
+        Config::from_file(config_path)
+            .with_context(|| format!("failed to load config from {}", config_path.display()))?
+    } else if nord_token.is_some() && countries.is_some() {
+        // Fully flag-driven, no config file needed.
+        Config {
+            proxy: houdinny::config::ProxyConfig::default(),
+            docker: DockerConfig::default(),
+            tunnel: Vec::new(),
+        }
+    } else {
+        anyhow::bail!(
+            "config file '{}' not found.\n\
+             Either create it (see houdinny.toml.example) or pass --nord-token + --countries flags.",
+            config_path.display()
+        );
+    };
+
+    // Build the effective DockerConfig, applying CLI overrides.
+    let mut docker_cfg = config.docker.clone();
+
+    // If --countries is passed, rebuild the VPN list from scratch.
+    if let Some(cli_countries) = countries {
+        let token = nord_token
+            .clone()
+            .or_else(|| docker_cfg.vpn.first().and_then(|v| v.token.clone()));
+        docker_cfg.enabled = true;
+        docker_cfg.vpn = cli_countries
+            .iter()
+            .map(|c| VpnConfig {
+                provider: "nordvpn".to_string(),
+                token: token.clone(),
+                country: c.clone(),
+            })
+            .collect();
+    } else if let Some(tok) = nord_token {
+        // Override token in all existing VPN entries.
+        for vpn in &mut docker_cfg.vpn {
+            vpn.token = Some(tok.clone());
+        }
+    }
+
+    // Resolve effective port.
+    let effective_port = port.unwrap_or_else(|| {
+        config
+            .proxy
+            .listen
+            .rsplit_once(':')
+            .and_then(|(_, p)| p.parse().ok())
+            .unwrap_or(8080)
+    });
+
+    // Apply port override to config too.
+    if port.is_some() {
+        config.proxy.listen = format!("127.0.0.1:{effective_port}");
+    }
+
+    Ok((config, docker_cfg, effective_port))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -299,6 +398,10 @@ async fn main() -> Result<()> {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
     };
     tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    // ── load .env ────────────────────────────────────────────────────────
+    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    load_dotenv(&cwd.join(".env"));
 
     // ── dispatch subcommands ─────────────────────────────────────────────
     match cli.command {
@@ -330,6 +433,31 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
+        Some(Commands::Start {
+            config: config_path,
+            nord_token,
+            countries,
+            port,
+            strategy,
+            no_wait,
+        }) => {
+            let (_config, docker_cfg, effective_port) =
+                load_start_config(&config_path, &nord_token, &countries, &port)?;
+
+            houdinny::docker::start(
+                &docker_cfg,
+                nord_token.as_deref(),
+                effective_port,
+                &strategy,
+                no_wait,
+            )
+            .await?;
+            return Ok(());
+        }
+        Some(Commands::Stop) => {
+            houdinny::docker::stop().await?;
+            return Ok(());
+        }
         None => {
             // Fall through to existing proxy run logic.
         }
@@ -340,9 +468,22 @@ async fn main() -> Result<()> {
         tracing::debug!(urls = ?urls, "building config from CLI tunnel URLs");
         Config::from_tunnel_urls(urls)
     } else {
-        tracing::debug!(path = %cli.config.display(), "loading config file");
-        Config::from_file(&cli.config)
-            .with_context(|| format!("failed to load config from {}", cli.config.display()))?
+        let config_path = &cli.config;
+        // Fall back to tunnels.toml if houdinny.toml doesn't exist.
+        let effective_path = if !config_path.exists() {
+            let fallback = PathBuf::from("tunnels.toml");
+            if fallback.exists() {
+                tracing::info!("houdinny.toml not found, falling back to tunnels.toml");
+                fallback
+            } else {
+                config_path.clone()
+            }
+        } else {
+            config_path.clone()
+        };
+        tracing::debug!(path = %effective_path.display(), "loading config file");
+        Config::from_file(&effective_path)
+            .with_context(|| format!("failed to load config from {}", effective_path.display()))?
     };
 
     // CLI overrides

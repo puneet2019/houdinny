@@ -26,4 +26,5 @@ Thumbs.db
 # Tunnel configs (may contain private keys)
 tunnels.toml
 tunnels.docker.toml
+houdinny.toml
 setup-wg.sh

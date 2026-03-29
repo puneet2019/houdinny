@@ -11,6 +11,8 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use tokio::process::Command;
 
+use crate::config::DockerConfig;
+
 // ---------------------------------------------------------------------------
 // Docker Compose structs (serialized via serde_yaml)
 // ---------------------------------------------------------------------------
@@ -324,13 +326,39 @@ async fn find_docker() -> Result<String> {
 // ---------------------------------------------------------------------------
 
 /// Generate all config files and bring the Docker stack up.
+///
+/// Reads VPN entries from `DockerConfig`. A `token_override` (from `--nord-token`)
+/// takes precedence over per-VPN tokens in the config.
 pub async fn start(
-    nord_token: &str,
-    countries: &[String],
+    docker_cfg: &DockerConfig,
+    token_override: Option<&str>,
     port: u16,
     strategy: &str,
     no_wait: bool,
 ) -> Result<()> {
+    if docker_cfg.vpn.is_empty() {
+        bail!(
+            "no VPN entries configured. Add [[docker.vpn]] sections to houdinny.toml \
+             or pass --nord-token + --countries."
+        );
+    }
+
+    // Resolve the token — CLI flag wins, then per-VPN config, then error.
+    let first_token = token_override
+        .map(|s| s.to_string())
+        .or_else(|| docker_cfg.vpn.iter().find_map(|v| v.token.clone()));
+    let nord_token = first_token.as_deref().unwrap_or("");
+    if nord_token.is_empty() || nord_token.contains("${") {
+        bail!(
+            "NordVPN token not set. Either:\n  \
+             1. Put NORD_TOKEN=... in .env and use ${{NORD_TOKEN}} in houdinny.toml\n  \
+             2. Pass --nord-token=... on the command line"
+        );
+    }
+
+    // Build the country list from config.
+    let countries: Vec<String> = docker_cfg.vpn.iter().map(|v| v.country.clone()).collect();
+
     let docker = find_docker().await?;
 
     // Resolve the project directory (where Cargo.toml lives).
@@ -344,7 +372,7 @@ pub async fn start(
     );
 
     // 1. Write docker-compose.yml
-    let compose = generate_docker_compose(countries, port);
+    let compose = generate_docker_compose(&countries, port);
     let compose_path = project_dir.join("docker-compose.yml");
     tokio::fs::write(&compose_path, &compose)
         .await
@@ -360,7 +388,7 @@ pub async fn start(
     tracing::info!(path = %env_path.display(), "wrote .env");
 
     // 3. Write tunnels.docker.toml
-    let tunnels = generate_tunnels_config(countries, strategy, port);
+    let tunnels = generate_tunnels_config(&countries, strategy, port);
     let tunnels_path = project_dir.join("tunnels.docker.toml");
     tokio::fs::write(&tunnels_path, &tunnels)
         .await
@@ -385,7 +413,7 @@ pub async fn start(
 
     // 5. Wait for health checks (unless --no-wait)
     if !no_wait {
-        wait_for_healthy(&docker, &project_dir, countries).await?;
+        wait_for_healthy(&docker, &project_dir, &countries).await?;
     }
 
     // 6. Success banner

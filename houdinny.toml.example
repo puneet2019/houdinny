@@ -1,0 +1,47 @@
+# houdinny configuration
+# Copy to houdinny.toml and edit.
+# Secrets can reference env vars: ${NORD_TOKEN}
+# Or put them in .env (auto-loaded).
+
+[proxy]
+listen = "127.0.0.1:8080"
+strategy = "round-robin"
+
+# --- Docker-managed VPN tunnels ---
+# These are spun up automatically by `houdinny start`
+
+[docker]
+enabled = true
+
+[[docker.vpn]]
+provider = "nordvpn"
+token = "${NORD_TOKEN}"       # from .env
+country = "us"
+
+[[docker.vpn]]
+provider = "nordvpn"
+token = "${NORD_TOKEN}"
+country = "de"
+
+[[docker.vpn]]
+provider = "nordvpn"
+token = "${NORD_TOKEN}"
+country = "jp"
+
+# --- Direct tunnels (no Docker needed) ---
+# These are used directly by houdinny's proxy
+
+# [[tunnel]]
+# protocol = "socks5"
+# address = "127.0.0.1:1080"
+# label = "ssh-tokyo"
+
+# [[tunnel]]
+# protocol = "http-proxy"
+# address = "http://user:pass@proxy.brightdata.com:22225"
+# label = "residential-us"
+
+# [[tunnel]]
+# protocol = "socks5"
+# address = "127.0.0.1:9050"
+# label = "tor"
