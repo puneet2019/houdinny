@@ -433,6 +433,61 @@ pub async fn start(
 // Health check polling
 // ---------------------------------------------------------------------------
 
+/// Per-VPN health state tracked during polling.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+enum VpnState {
+    Waiting,
+    Connected,
+    Failed(String),
+}
+
+impl VpnState {
+    fn is_resolved(&self) -> bool {
+        matches!(self, VpnState::Connected | VpnState::Failed(_))
+    }
+
+    fn is_connected(&self) -> bool {
+        matches!(self, VpnState::Connected)
+    }
+}
+
+/// Inspect the last few log lines of a stopped container and return a
+/// human-readable reason for the failure.
+async fn diagnose_container(docker: &str, container: &str) -> String {
+    let logs = Command::new(docker)
+        .args(["logs", "--tail", "20", container])
+        .output()
+        .await;
+
+    let log_text = match &logs {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            format!("{stdout}{stderr}")
+        }
+        Err(_) => String::new(),
+    };
+
+    let lower = log_text.to_lowercase();
+
+    if lower.contains("token") {
+        return "invalid or expired NordVPN token".to_string();
+    }
+    if lower.contains("no such device") {
+        return "WireGuard/NordLynx not available — restart Docker Desktop".to_string();
+    }
+
+    // Fall back to last non-empty log line.
+    let last_line = log_text
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("unknown error")
+        .trim();
+    last_line.to_string()
+}
+
 async fn wait_for_healthy(docker: &str, _project_dir: &Path, countries: &[String]) -> Result<()> {
     let timeout = Duration::from_secs(180);
     let poll_interval = Duration::from_secs(5);
@@ -441,32 +496,40 @@ async fn wait_for_healthy(docker: &str, _project_dir: &Path, countries: &[String
 
     println!("Waiting for {expected_vpns} VPN container(s) to connect...");
 
-    let mut connected: Vec<bool> = vec![false; expected_vpns];
+    let mut states: Vec<VpnState> = vec![VpnState::Waiting; expected_vpns];
 
     loop {
-        if start.elapsed() > timeout {
-            let missing: Vec<_> = connected
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| !**c)
-                .map(|(i, _)| format!("vpn-{}", i + 1))
-                .collect();
-            bail!(
-                "timed out after {}s. Still waiting on: {}.\n\
-                 Run `docker logs houdinny-vpn-N` to check status.",
-                timeout.as_secs(),
-                missing.join(", ")
-            );
-        }
-
-        for (i, is_connected) in connected.iter_mut().enumerate() {
-            if *is_connected {
+        // ---- poll each unresolved VPN ----
+        for (i, state) in states.iter_mut().enumerate() {
+            if state.is_resolved() {
                 continue;
             }
             let n = i + 1;
             let container = format!("houdinny-vpn-{n}");
+            let country_name = resolve_country(&countries[i]);
 
-            // Check if VPN is connected
+            // 1. Check if the container is still running.
+            let inspect = Command::new(docker)
+                .args(["inspect", "-f", "{{.State.Running}}", &container])
+                .output()
+                .await;
+
+            let running = match &inspect {
+                Ok(out) => String::from_utf8_lossy(&out.stdout)
+                    .trim()
+                    .eq_ignore_ascii_case("true"),
+                Err(_) => false,
+            };
+
+            if !running {
+                // Container exited — diagnose and mark as failed.
+                let reason = diagnose_container(docker, &container).await;
+                println!("  VPN-{n} ({country_name}) FAILED: container exited — {reason}");
+                *state = VpnState::Failed(reason);
+                continue;
+            }
+
+            // 2. Container is running — check NordVPN connection status.
             let output = Command::new(docker)
                 .args(["exec", &container, "nordvpn", "status"])
                 .output()
@@ -475,7 +538,6 @@ async fn wait_for_healthy(docker: &str, _project_dir: &Path, countries: &[String
             if let Ok(out) = output {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 if stdout.to_lowercase().contains("status: connected") {
-                    let country_name = resolve_country(&countries[i]);
                     println!("  VPN-{n} ({country_name}) connected!");
 
                     // Whitelist subnet + start microsocks
@@ -506,14 +568,49 @@ async fn wait_for_healthy(docker: &str, _project_dir: &Path, countries: &[String
                         .output()
                         .await;
 
-                    *is_connected = true;
+                    *state = VpnState::Connected;
                 }
             }
         }
 
-        if connected.iter().all(|c| *c) {
+        // ---- evaluate overall progress ----
+        let connected_count = states.iter().filter(|s| s.is_connected()).count();
+        let all_resolved = states.iter().all(|s| s.is_resolved());
+
+        if all_resolved || start.elapsed() > timeout {
+            // Mark any still-waiting VPNs as timed-out failures.
+            for (i, state) in states.iter_mut().enumerate() {
+                if matches!(state, VpnState::Waiting) {
+                    let n = i + 1;
+                    let container = format!("houdinny-vpn-{n}");
+                    let country_name = resolve_country(&countries[i]);
+                    println!(
+                        "  VPN-{n} ({country_name}) FAILED: timed out after {}s — \
+                         check `docker logs {container}`",
+                        timeout.as_secs(),
+                    );
+                    *state = VpnState::Failed("timed out".to_string());
+                }
+            }
+
+            if connected_count == 0 {
+                bail!(
+                    "No VPNs connected. Troubleshooting:\n  \
+                     1. Check your NordVPN token in .env — is it valid?\n  \
+                     2. Run: docker logs houdinny-vpn-1\n  \
+                     3. Try restarting Docker Desktop\n  \
+                     4. Try a different country"
+                );
+            }
+
+            println!("\nProceeding with {connected_count}/{expected_vpns} tunnel(s).");
+
             // Restart houdinny so it can connect to now-available SOCKS5 proxies
-            println!("  All VPNs connected. Restarting houdinny proxy...");
+            if connected_count == expected_vpns {
+                println!("  All VPNs connected. Restarting houdinny proxy...");
+            } else {
+                println!("  Restarting houdinny proxy with available tunnels...");
+            }
             let _ = Command::new(docker)
                 .args(["restart", "houdinny"])
                 .output()
@@ -522,8 +619,11 @@ async fn wait_for_healthy(docker: &str, _project_dir: &Path, countries: &[String
             return Ok(());
         }
 
-        let count = connected.iter().filter(|c| **c).count();
-        tracing::debug!(connected = count, expected = expected_vpns, "waiting...");
+        tracing::debug!(
+            connected = connected_count,
+            expected = expected_vpns,
+            "waiting..."
+        );
         tokio::time::sleep(poll_interval).await;
     }
 }
