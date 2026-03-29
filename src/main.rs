@@ -54,7 +54,8 @@ enum Commands {
     },
 
     /// Start houdinny with Docker — reads config and runs docker compose
-    Start {
+    #[command(name = "start-docker")]
+    StartDocker {
         /// Config file path [default: houdinny.toml]
         #[arg(short, long, default_value = "houdinny.toml")]
         config: PathBuf,
@@ -81,7 +82,8 @@ enum Commands {
     },
 
     /// Stop houdinny Docker stack
-    Stop,
+    #[command(name = "stop-docker")]
+    StopDocker,
 }
 
 #[derive(Subcommand, Debug)]
@@ -433,7 +435,7 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
-        Some(Commands::Start {
+        Some(Commands::StartDocker {
             config: config_path,
             nord_token,
             countries,
@@ -454,7 +456,7 @@ async fn main() -> Result<()> {
             .await?;
             return Ok(());
         }
-        Some(Commands::Stop) => {
+        Some(Commands::StopDocker) => {
             houdinny::docker::stop().await?;
             return Ok(());
         }
