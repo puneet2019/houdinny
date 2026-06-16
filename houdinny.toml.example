@@ -8,7 +8,7 @@ listen = "127.0.0.1:8080"
 strategy = "round-robin"
 
 # --- Docker-managed VPN tunnels ---
-# These are spun up automatically by `houdinny start`
+# These are spun up automatically by `houdinny start-docker`
 
 [docker]
 enabled = true

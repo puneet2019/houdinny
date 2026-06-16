@@ -4,30 +4,68 @@ Privacy proxy for AI agents. Rotates requests across tunnel pools so each reques
 
 ## What it does
 
-- **Tunnel rotation** -- every request your agent makes goes through a different tunnel. No single observer sees the full picture.
+- **Tunnel rotation** -- every connection your agent opens goes through a different tunnel. No single network observer sees the full picture.
 - **Language-agnostic** -- any agent in any language just sets `HTTP_PROXY` / `HTTPS_PROXY` and goes. Single static binary.
-- **Pluggable transports** -- SOCKS5, HTTP CONNECT, WireGuard interface binding. Tor planned.
+- **Pluggable transports** -- SOCKS5, HTTP CONNECT, and WireGuard interface binding all work today. Tor is feature-gated/experimental.
+- **One-command Docker setup** -- `houdinny start-docker` spins up a pool of NordVPN containers and wires them in automatically.
 - **Import CLI** -- one command to pull WireGuard configs from NordVPN or set up SSH SOCKS5 tunnels.
-- **MCP server** -- exposes tunnel pool management tools over JSON-RPC for AI agents.
+
+> **Status:** the core proxy, SOCKS5/HTTP-CONNECT/WireGuard transports, the
+> tunnel pool, routing, and the Docker setup all work. Several advertised pieces
+> (anti-correlation, MITM mode, payment handling, the admin API, and the MCP
+> server) are **built and tested but not yet wired into the running binary**.
+> See [FUTURE_WORK.md](FUTURE_WORK.md) for the full status ledger.
 
 ## Quick Start
 
-### Docker (recommended)
+### Docker (recommended) -- one command
+
+`start-docker` generates the compose stack, brings up one NordVPN container per
+country, waits for them to connect, and wires them into the pool automatically.
+Run it from a repo checkout (it builds the local `Dockerfile` / `docker/`):
 
 ```bash
-# 1. Clone and configure
 git clone https://github.com/puneet2019/houdinny.git
 cd houdinny
-cp .env.example .env
-# Edit .env — add your NordVPN access token
 
-# 2. Copy the Docker tunnel config template
+# Spin up VPN containers for the given countries and start the proxy
+cargo run --release -- start-docker --nord-token=YOUR_NORDVPN_TOKEN --countries=us,de,jp
+
+# Point your agent at it
+export HTTP_PROXY=http://localhost:8080
+export HTTPS_PROXY=http://localhost:8080
+curl https://httpbin.org/ip   # each request exits from a different country
+```
+
+Prefer config over flags? Put your token and countries in `houdinny.toml` + `.env`,
+then just run `start-docker`:
+
+```bash
+cp houdinny.toml.example houdinny.toml   # edit the [docker.vpn] countries
+cp .env.example .env                     # add NORD_TOKEN
+cargo run --release -- start-docker
+```
+
+Stop the stack with `cargo run --release -- stop-docker` (or `docker compose down`).
+
+`start-docker` handles everything the manual flow below used to require:
+generating `docker-compose.yml` / `tunnels.docker.toml`, whitelisting the Docker
+subnet, starting the SOCKS5 proxy inside each container, and restarting the proxy
+once tunnels are live. It tolerates partial pools -- if some VPNs fail to connect,
+it proceeds with whatever came up.
+
+<details>
+<summary>Manual Docker flow (what <code>start-docker</code> automates)</summary>
+
+```bash
+# 1. Configure
+cp .env.example .env                          # add your NordVPN access token
 cp tunnels.docker.example.toml tunnels.docker.toml
 
-# 3. Start everything
+# 2. Start the containers
 docker compose up -d
 
-# 4. Whitelist the Docker network and start SOCKS5 proxies inside VPN containers
+# 3. Whitelist the Docker subnet and start SOCKS5 inside each VPN container
 docker exec houdinny-vpn-1 nordvpn whitelist add subnet 172.20.0.0/16
 docker exec houdinny-vpn-2 nordvpn whitelist add subnet 172.20.0.0/16
 docker exec houdinny-vpn-3 nordvpn whitelist add subnet 172.20.0.0/16
@@ -35,18 +73,20 @@ docker exec -d houdinny-vpn-1 microsocks -p 1080 -b 0.0.0.0
 docker exec -d houdinny-vpn-2 microsocks -p 1080 -b 0.0.0.0
 docker exec -d houdinny-vpn-3 microsocks -p 1080 -b 0.0.0.0
 
-# 5. Restart houdinny so it picks up the now-available SOCKS5 proxies
+# 4. Restart houdinny so it picks up the now-available SOCKS5 proxies
 docker restart houdinny
 
-# 6. Point your agent at it
+# 5. Point your agent at it
 export HTTP_PROXY=http://localhost:8080
-export HTTPS_PROXY=http://localhost:8080
 curl https://httpbin.org/ip
 ```
 
-The Docker setup runs 3 NordVPN containers (US, Germany, Japan) with NordLynx, each exposing a SOCKS5 proxy via microsocks. houdinny round-robins across them.
+</details>
 
-To add more countries, duplicate a `vpn-N` + matching `[[tunnel]]` entry in `docker-compose.yml` and `tunnels.docker.toml`.
+The Docker setup runs one NordVPN container per country (default: US, Germany,
+Japan) with NordLynx, each exposing a SOCKS5 proxy via microsocks. houdinny
+round-robins across them. To add countries, pass more to `--countries` (or add
+`[[docker.vpn]]` entries in `houdinny.toml`).
 
 ### Binary (standalone)
 
@@ -85,14 +125,16 @@ Download pre-built binaries from [GitHub Releases](https://github.com/puneet2019
 ### Docker (ghcr.io)
 
 ```bash
-docker pull ghcr.io/aquaqualis/houdinny:latest
-docker run --rm -p 8080:8080 ghcr.io/aquaqualis/houdinny -t socks5://host.docker.internal:1080
+docker pull ghcr.io/puneet2019/houdinny:latest
+docker run --rm -p 8080:8080 ghcr.io/puneet2019/houdinny -t socks5://host.docker.internal:1080
 ```
 
 ### cargo install
 
+Not yet published to crates.io -- install straight from git:
+
 ```bash
-cargo install houdinny
+cargo install --git https://github.com/puneet2019/houdinny
 ```
 
 ### From source
@@ -111,10 +153,13 @@ Requirements: Rust 1.85+ (edition 2024).
 houdinny [OPTIONS] [COMMAND]
 
 Commands:
-  import  Import tunnel configurations from providers
+  import        Import tunnel configurations from providers (nord, ssh)
+  start-docker  Generate the compose stack, start the VPN pool, and run the proxy
+  stop-docker   Bring the Docker stack down (docker compose down)
 
 Options:
-  -c, --config <CONFIG>      Path to the TOML config file [default: tunnels.toml]
+  -c, --config <CONFIG>      Path to the TOML config file [default: houdinny.toml]
+                              (falls back to tunnels.toml if houdinny.toml is absent)
   -l, --listen <LISTEN>      Listen address (overrides the value in the config file)
   -t, --tunnels <TUNNELS>    Comma-separated tunnel URLs
                               (e.g. socks5://127.0.0.1:1080,socks5://127.0.0.1:1081)
@@ -210,7 +255,35 @@ When `--start` is used, each tunnel is launched in the background with `ssh -D <
 
 ## Configuration
 
-Copy `tunnels.example.toml` to `tunnels.toml` and edit:
+houdinny reads two kinds of config file, both standard TOML:
+
+- **`houdinny.toml`** (default for the proxy and for `start-docker`) -- the
+  config-first format. It holds `[proxy]` settings plus a `[docker]` section
+  describing the VPN pool to spin up. Secrets can reference env vars
+  (`token = "${NORD_TOKEN}"`), auto-loaded from `.env`. Start from
+  `houdinny.toml.example`.
+- **`tunnels.toml`** -- a direct list of `[[tunnel]]` entries (the output of
+  `houdinny import …`, and the fallback when `houdinny.toml` is absent). Start
+  from `tunnels.example.toml`.
+
+`houdinny.toml.example` (config-first, used by `start-docker`):
+
+```toml
+[proxy]
+listen = "127.0.0.1:8080"
+strategy = "round-robin"
+
+[docker]
+enabled = true
+
+[[docker.vpn]]
+provider = "nordvpn"
+token = "${NORD_TOKEN}"   # from .env
+country = "us"
+# ... one [[docker.vpn]] block per country
+```
+
+`tunnels.example.toml` (direct tunnels, no Docker):
 
 ```toml
 [proxy]
@@ -399,10 +472,10 @@ Tunnel A      Tunnel B      Tunnel C
 | `router` | Route selection (random, round-robin) |
 | `pool` | Tunnel pool with runtime add/remove |
 | `transport` | Transport trait + implementations (socks5, http_proxy, wireguard, sentinel stub, tor) |
-| `relay` | Bidirectional stream relay with byte counting; buffered relay for server-side rotation |
-| `anticorr` | Anti-correlation: timing jitter, packet padding (opt-in) |
-| `payment` | 402 response parsing, handler plugin system, dummy handler, x402 stub |
-| `route` | Route manager: Linux policy routing / namespace command generation, macOS noop |
+| `relay` | Bidirectional stream relay with byte counting; buffered relay for rotation (the live proxy currently uses inline `copy_bidirectional`/`copy`) |
+| `anticorr` | Anti-correlation: timing jitter, packet padding (built + tested, not yet in live path) |
+| `payment` | 402 response parsing, handler plugin system, dummy handler, x402 stub (not yet in live path) |
+| `route` | Route manager: Linux policy routing / namespace command **generation** (not executed), macOS noop |
 | `config` | TOML config parsing, CLI-to-config conversion |
 | `admin` | Admin REST API (feature-gated, not yet wired into main) |
 | `mcp` | MCP server over JSON-RPC 2.0 (feature-gated, not yet wired into main) |
@@ -410,6 +483,8 @@ Tunnel A      Tunnel B      Tunnel C
 | `error` | Error types |
 
 The proxy handles both HTTP CONNECT (for HTTPS tunneling) and plain HTTP forwarding. For CONNECT, it does transparent TCP relay via `copy_bidirectional`. For plain HTTP, it rewrites the absolute URL to a relative path and forwards through the selected tunnel.
+
+The **live request path** is: agent → `proxy` → `router` → `pool` → `transport` → inline relay. The `anticorr`, `payment`, `route`, buffered-`relay`, `admin`, and `mcp` modules are built and tested but not yet on that path -- see [FUTURE_WORK.md](FUTURE_WORK.md).
 
 ## Transports
 
@@ -464,14 +539,26 @@ The release profile produces a stripped binary with LTO and `panic = "abort"` fo
 
 ## Docker Setup (detailed)
 
+> `houdinny start-docker` (see [Quick Start](#quick-start)) generates
+> `docker-compose.yml` / `.env` / `tunnels.docker.toml` and performs all the
+> post-startup steps below for you. This section describes the underlying
+> mechanics and the manual path.
+
 ### How it works
 
-The `docker-compose.yml` defines:
+The generated `docker-compose.yml` defines:
 
-1. **VPN containers** (`vpn-1`, `vpn-2`, `vpn-3`) -- each runs the [bubuntux/nordvpn](https://github.com/bubuntux/nordvpn) image with NordLynx (WireGuard), connecting to a different country.
+1. **VPN containers** (`vpn-1`, `vpn-2`, …) -- one per country, each running the
+   [bubuntux/nordvpn](https://github.com/bubuntux/nordvpn) image with NordLynx
+   (WireGuard) and exposing a SOCKS5 proxy via microsocks.
 2. **houdinny container** -- reads `tunnels.docker.toml` and round-robins across the VPN containers.
 
 All containers share a Docker bridge network (`172.20.0.0/16`) with static IPs.
+
+> **Security note:** the VPN containers use the third-party `bubuntux/nordvpn`
+> image (an individual community project, not NordVPN-official) and run with the
+> `NET_ADMIN` + `NET_RAW` capabilities. Review the image before trusting it with
+> your NordVPN token.
 
 ### Environment
 
@@ -483,9 +570,10 @@ NORD_TOKEN=your-nordvpn-access-token-here
 
 Get your token from [NordVPN manual configuration](https://my.nordaccount.com/dashboard/nordvpn/manual-configuration/).
 
-### Post-startup steps
+### Post-startup steps (manual path only)
 
-After `docker compose up -d`, the VPN containers are running but houdinny cannot reach them yet. You need to:
+`start-docker` does all of this automatically. If you ran `docker compose up -d`
+yourself, the VPN containers are running but houdinny cannot reach them yet, so you need to:
 
 1. **Whitelist the Docker subnet** so NordVPN allows internal traffic:
 
@@ -520,36 +608,24 @@ curl -x http://localhost:8080 https://httpbin.org/ip
 
 ## Roadmap
 
-### Working
+### Working (live in the binary)
 
-- Core HTTP/HTTPS proxy server (CONNECT + plain HTTP)
+- Core HTTP/HTTPS proxy server (CONNECT + plain HTTP forwarding)
 - SOCKS5 transport (SSH tunnels, proxy services)
 - HTTP CONNECT transport (residential/datacenter proxies, Basic auth)
 - WireGuard transport (per-socket interface binding, Linux + macOS)
-- Tunnel pool with runtime add/remove
-- Router: random and round-robin strategies
-- Bidirectional stream relay with byte counting
-- Buffered relay for server-side rotation (agent connection stays open)
-- Anti-correlation: timing jitter, packet padding (implemented, not wired into request path)
-- Payment interceptor: 402 parsing, handler plugin system, dummy handler for testing
-- Route manager: Linux policy routing / namespace command generation, macOS noop
-- TOML config file + CLI flag support
+- Tunnel pool with runtime add/remove and a random/round-robin router
+- One-command Docker orchestration: `start-docker` / `stop-docker` with NordVPN containers
+- Config-first TOML (`houdinny.toml` / `tunnels.toml`) + CLI flags + `.env` secret interpolation
 - Import CLI: NordVPN WireGuard, SSH SOCKS5
-- Admin REST API (code exists, feature-gated)
-- MCP server with 4 tools (code exists, feature-gated)
-- Dockerfile + docker-compose with NordVPN
 
-### Not yet done
+### Planned / in progress
 
-- Admin API / MCP server wired into `main.rs` startup
-- Tor transport tested end-to-end (feature-gated code exists via `arti-client`)
-- Sentinel dVPN transport (stub -- requires Cosmos SDK integration)
-- x402 / L402 real payment handlers (stubs exist)
-- MITM mode for HTTP response inspection (needed for 402 interception in transparent mode)
-- Anti-correlation integration into the proxy pipeline
-- Relay statistics collection (admin `/stats` endpoint returns zeroes)
-- Tunnel health probing (periodic connectivity checks)
-- Mid-stream tunnel rotation for resumable protocols
+Several subsystems are coded (and in most cases unit-tested) but not yet part of
+the running proxy: anti-correlation (jitter/padding), MITM mode, payment handling
+(402/x402/L402), the admin API, the MCP server, end-to-end Tor, the Sentinel
+dVPN transport, active health probing, and request timeouts. The full,
+itemised list with code pointers lives in **[FUTURE_WORK.md](FUTURE_WORK.md)**.
 
 ### Limitations
 
